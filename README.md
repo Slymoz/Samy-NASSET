@@ -35,6 +35,7 @@ Built from scratch in C++17 — no external financial libraries.
 
 ## 🛠️ Architecture
 
+```text
 BacktestingEngine/
 ├── include/
 │ ├── Types.hpp — Candle, Order, TradeRecord, BacktestResult
@@ -56,6 +57,7 @@ BacktestingEngine/
 ├── main.cpp
 ├── CMakeLists.txt
 └── download_data.py
+```
 
 ### Key design decisions
 
@@ -142,20 +144,20 @@ python3 download_data.py ETH-USD 1y 1h data/eth.csv
 ╔══════════════════════════════════════╗
 ║        RAPPORT DE BACKTEST           ║
 ╠══════════════════════════════════════╣
-║  Capital initial  : $      10000.00 ║
-║  Capital final    : $      14507.62 ║
-║  ROI              :          45.08% ║
-║  Max Drawdown     :          29.81% ║
-║  Win Rate         :          44.44% ║
+║  Capital initial  : $      10000.00  ║
+║  Capital final    : $      14507.62  ║
+║  ROI              :          45.08%  ║
+║  Max Drawdown     :          29.81%  ║
+║  Win Rate         :          44.44%  ║
 ╠══════════════════════════════════════╣
-║  Trades totaux    :               9 ║
-║  Trades gagnants  :               4 ║
-║  Trades perdants  :               5 ║
+║  Trades totaux    :               9  ║
+║  Trades gagnants  :               4  ║
+║  Trades perdants  :               5  ║
 ╠══════════════════════════════════════╣
-║  P&L net total    : $       4507.62 ║
-║  Gain moyen       : $       2370.89 ║
-║  Perte moyenne    : $        995.18 ║
-║  Profit Factor    :            1.91 ║
+║  P&L net total    : $       4507.62  ║
+║  Gain moyen       : $       2370.89  ║
+║  Perte moyenne    : $        995.18  ║
+║  Profit Factor    :            1.91  ║
 ╚══════════════════════════════════════╝
 ```
 
