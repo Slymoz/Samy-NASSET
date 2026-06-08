@@ -2,12 +2,13 @@
 #include <stdexcept>
 #include <numeric>
 
-std::vector<double> Indicators::SMA(const std::vector<double>& prices, int period) {
-    if (period <= 0)
-        throw std::invalid_argument("La période SMA doit être > 0");
+std::vector<double> Indicators::SMA(const std::vector<double> &prices, int period) {
+    if (period <= 0) {
+        throw std::invalid_argument("The SMA period must be > 0");
+    }
 
     std::vector<double> result(prices.size(), 0.0);
-    double              sum = 0.0;
+    double sum = 0.0;
 
     for (size_t i = 0; i < prices.size(); ++i) {
         sum += prices[i];
@@ -21,17 +22,18 @@ std::vector<double> Indicators::SMA(const std::vector<double>& prices, int perio
     return result;
 }
 
-std::vector<double> Indicators::EMA(const std::vector<double>& prices, int period) {
-    if (period <= 0)
-        throw std::invalid_argument("La période EMA doit être > 0");
+std::vector<double> Indicators::EMA(const std::vector<double> &prices, int period) {
+    if (period <= 0) {
+        throw std::invalid_argument("The EMA period must be > 0");
+    }
 
     std::vector<double> result(prices.size(), 0.0);
-    double              multiplier = 2.0 / (period + 1);
+    double multiplier = 2.0 / (period + 1);
 
-    // Seed : première EMA = première SMA
     double initialSMA = 0.0;
-    for (int i = 0; i < period && i < static_cast<int>(prices.size()); ++i)
+    for (int i = 0; i < period && i < static_cast<int>(prices.size()); ++i) {
         initialSMA += prices[i];
+    }
     initialSMA /= period;
 
     result[period - 1] = initialSMA;
@@ -42,37 +44,41 @@ std::vector<double> Indicators::EMA(const std::vector<double>& prices, int perio
     return result;
 }
 
-std::vector<double> Indicators::RSI(const std::vector<double>& prices, int period) {
-    if (period <= 0)
-        throw std::invalid_argument("La période RSI doit être > 0");
+std::vector<double> Indicators::RSI(const std::vector<double> &prices, int period) {
+    if (period <= 0) {
+        throw std::invalid_argument("The RSI period must be > 0");
+    }
 
     std::vector<double> result(prices.size(), 0.0);
 
     double avgGain = 0.0;
     double avgLoss = 0.0;
 
-    // Calcul initial sur les 'period' premiers mouvements
     for (int i = 1; i <= period && i < static_cast<int>(prices.size()); ++i) {
         double change = prices[i] - prices[i - 1];
-        if (change > 0) avgGain += change;
-        else            avgLoss += (-change);
+        if (change > 0) {
+            avgGain += change;
+        } else {
+            avgLoss += (-change);
+        }
     }
     avgGain /= period;
     avgLoss /= period;
 
     auto calcRSI = [](double gain, double loss) -> double {
-        if (loss == 0.0) return 100.0;
+        if (loss == 0.0) {
+            return 100.0;
+        }
         double rs = gain / loss;
         return 100.0 - (100.0 / (1.0 + rs));
     };
 
     result[period] = calcRSI(avgGain, avgLoss);
 
-    // Méthode de Wilder (smoothed RSI)
     for (size_t i = period + 1; i < prices.size(); ++i) {
         double change = prices[i] - prices[i - 1];
-        double gain   = (change > 0) ? change : 0.0;
-        double loss   = (change < 0) ? (-change) : 0.0;
+        double gain = (change > 0) ? change : 0.0;
+        double loss = (change < 0) ? (-change) : 0.0;
 
         avgGain = (avgGain * (period - 1) + gain) / period;
         avgLoss = (avgLoss * (period - 1) + loss) / period;

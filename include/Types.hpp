@@ -4,36 +4,32 @@
 
 struct Candle {
     std::string timestamp;
-    double      open;
-    double      high;
-    double      low;
-    double      close;
-    double      volume;
+    double open;
+    double high;
+    double low;
+    double close;
+    double volume;
 };
 
-enum class OrderSide {
-    BUY,
-    SELL
-};
+enum class OrderSide { BUY, SELL };
 
 struct Order {
     std::string timestamp;
-    OrderSide   side;
-    double      price;
-    double      quantity;
+    OrderSide side;
+    double price;
+    double quantity;
 };
 
-// ✅ Nouveau : enregistrement complet d'un trade bouclé
 struct TradeRecord {
     std::string buyTimestamp;
     std::string sellTimestamp;
-    double      buyPrice;
-    double      sellPrice;
-    double      quantity;
-    double      buyFee;
-    double      sellFee;
-    double      pnl;        // profit/perte net après frais
-    bool        isWin;
+    double buyPrice;
+    double sellPrice;
+    double quantity;
+    double buyFee;
+    double sellFee;
+    double pnl;
+    bool isWin;
 };
 
 struct BacktestResult {
@@ -42,11 +38,11 @@ struct BacktestResult {
     double roi;
     double maxDrawdown;
     double winRate;
-    int    totalTrades;
-    int    winningTrades;
-    int    losingTrades;
-    double totalPnl;        // ✅ P&L cumulé net
-    double avgWin;          // ✅ gain moyen sur trades gagnants
-    double avgLoss;         // ✅ perte moyenne sur trades perdants
-    double profitFactor;    // ✅ ratio gains bruts / pertes brutes
+    int totalTrades;
+    int winningTrades;
+    int losingTrades;
+    double totalPnl;
+    double avgWin;
+    double avgLoss;
+    double profitFactor;
 };

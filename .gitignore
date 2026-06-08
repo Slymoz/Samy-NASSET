@@ -1,18 +1,11 @@
 # Build
 build/
-
-# CMake
 compile_commands.json
-CMakeCache.txt
-cmake_install.cmake
-Makefile
 
-# VSCode
+# IDE
 .vscode/
-
-# CLion
 .idea/
 
-# Executables
+# Binaries
 backtest
 *.out

@@ -92,7 +92,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-## 📥 Data Download
+## 📥 Data Download (in root folder)
 
 ```bash
 # BTC/USD — 2 years, daily candles
@@ -102,7 +102,7 @@ python3 download_data.py BTC-USD 2y 1d data/btc.csv
 python3 download_data.py ETH-USD 1y 1h data/eth.csv
 ```
 
-## 🔁 Usage
+## 🔁 Usage (in build folder)
 
 ```bash
 # MA Crossover — short=10, long=50
