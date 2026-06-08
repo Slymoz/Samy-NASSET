@@ -125,7 +125,7 @@ to produce more realistic simulations.
 
 Parameter combinations are automatically evaluated and ranked using :
 
-```text
+```math
 (ROI × ProfitFactor) / (1 + MaxDrawdown)
 ```
 
