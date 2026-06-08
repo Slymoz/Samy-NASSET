@@ -315,22 +315,31 @@ Optimize RSI parameters :
 ## 📄 Example Output
 
 ```text
-=== Simulation : MA Crossover (short=10 / long=50) [SL=5%] ===
+=== Simulation : MA Crossover (short=10 / long=50) ===
 
-[BUY]  2024-09-19 | Price: 62940.46 | Qty: 0.158722 | Fees: 9.99
-[SELL] 2024-12-30 | Price: 92643.21 | Qty: 0.158722 | Fees: 14.70 | PnL: +4689.77$
+[BUY]  2024-09-19 | Price: 62940.46 | Qty: 0.158722 | Fees: 9.9900
+[SELL] 2024-12-30 | Price: 92643.21 | Qty: 0.158722 | Fees: 14.7045 | PnL: +4689.77$
 
 ...
 
-╔══════════════════════════════════════╗
-║         BACKTEST REPORT             ║
-╠══════════════════════════════════════╣
-║ Initial Capital : $      10000.00   ║
-║ Final Capital   : $      14507.62   ║
-║ ROI             :          45.08%   ║
-║ Max Drawdown    :          29.81%   ║
-║ Win Rate        :          44.44%   ║
-╚══════════════════════════════════════╝
++--------------------------------------+
+|           BACKTEST REPORT            |
++--------------------------------------+
+| Initial Capital    :      $10000.00  |
+| Final Capital      :      $13065.13  |
+| ROI                :         30.65%  |
+| Max Drawdown       :         36.79%  |
+| Win Rate           :         44.44%  |
++--------------------------------------+
+| Total Trades       :              9  |
+| Winning Trades     :              4  |
+| Losing Trades      :              5  |
++--------------------------------------+
+| P&L net total      :       $3065.13  |
+| Average Win        :       $2352.27  |
+| Average Loss       :       $1268.79  |
+| Profit Factor      :           1.48  |
++--------------------------------------+
 ```
 
 ## ➕ Adding a Custom Strategy
