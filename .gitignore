@@ -1,0 +1,18 @@
+# Build
+build/
+
+# CMake
+compile_commands.json
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# VSCode
+.vscode/
+
+# CLion
+.idea/
+
+# Executables
+backtest
+*.out
