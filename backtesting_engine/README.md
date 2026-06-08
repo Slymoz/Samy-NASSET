@@ -4,8 +4,6 @@ A modular and high-performance C++17 backtesting engine designed to simulate, ev
 
 Built entirely from scratch in modern C++, without external financial libraries, this project demonstrates object-oriented design, quantitative analysis, risk management and automated strategy optimization.
 
-
-
 ## 🚀 Features
 
 * **CSV Market Data Ingestion** — Load OHLCV market data from any CSV source (see data folder for format)
@@ -17,21 +15,6 @@ Built entirely from scratch in modern C++, without external financial libraries,
 * **Parameter Optimizer** — Automatically evaluate hundreds of configurations
 * **Financial Metrics** — ROI, Max Drawdown, Win Rate, Profit Factor, Average Win/Loss
 * **Code Quality Tooling** — Integrated clang-format and clang-tidy workflow
-
-
-
-## 🚀 Quick Start
-
-```bash
-git clone https://github.com/Slymoz/Samy-NASSET.git
-cd Samy-NASSET/backtesting_engine
-
-./build.sh
-
-python3 download_data.py BTC-USD 2y 1d data/btc.csv
-
-./build/backtest data/btc.csv ma 10 50
-```
 
 ## 📈 Included Trading Strategies
 
@@ -61,22 +44,18 @@ The strategy attempts to buy when the market appears oversold and sell when it a
 
 This approach is commonly used to identify potential trend reversals.
 
-
-
 ## 📊 Results (BTC/USD — 2 Years Daily Data)
 
 ### Parameter Optimization — MA Crossover (460 configurations tested in ~13 ms)
 
-| Configuration                | ROI         | Max DD     | Win Rate | Profit Factor | Trades |
-| - | -- | - | -- | - |  |
-| **MA(15/100) SL=7% TP=30%**  | **+52.38%** | **17.94%** | 40%      | **2.70**      | 5      |
-| MA(5/50) SL=3%               | +53.29%     | 23.54%     | 41.67%   | 2.14          | 12     |
-| MA(30/100) SL=5%             | +37.00%     | 18.84%     | 50.00%   | 2.66          | 4      |
-| MA(10/50) No Risk Management | +30.65%     | 36.79%     | 44.44%   | 1.48          | 9      |
+| Configuration | ROI | Max DD | Win Rate | Profit Factor | Trades |
+|---------------|-----|--------|----------|---------------|--------|
+| **MA(15/100) SL=7% TP=30%** | **+52.38%** | **17.94%** | 40% | **2.70** | 5 |
+| MA(5/50) SL=3% | +53.29% | 23.54% | 41.67% | 2.14 | 12 |
+| MA(30/100) SL=5% | +37.00% | 18.84% | 50.00% | 2.66 | 4 |
+| MA(10/50) No Risk Management | +30.65% | 36.79% | 44.44% | 1.48 | 9 |
 
 > Best configuration : **MA(15/100) SL=7% TP=30%** — ROI +52.38% with only 17.94% drawdown.
-
-
 
 ## 🛠️ Project Architecture
 
@@ -152,8 +131,6 @@ Parameter combinations are automatically evaluated and ranked using :
 
 This scoring function balances profitability and risk.
 
-
-
 ## 📋 Requirements
 
 ### Linux (Ubuntu / Debian)
@@ -175,7 +152,7 @@ sudo apt install \
 Install the **optional** Python dependency used for market data downloads :
 
 ```bash
-pip3 install yfinance
+python3 -m pip install yfinance
 ```
 
 ### Supported Versions
@@ -184,11 +161,9 @@ pip3 install yfinance
 * CMake ≥ 3.16
 * Python ≥ 3.8
 
-
-
 ## ⚙️ Build
 
-Clone the repository:
+Clone the repository :
 
 ```bash
 git clone https://github.com/Slymoz/Samy-NASSET.git
@@ -207,8 +182,6 @@ The executable will be generated at :
 ./build/backtest
 ```
 
-
-
 ## 🧹 Code Formatting & Linting
 
 Apply the project coding style :
@@ -222,8 +195,6 @@ This command :
 * Applies clang-tidy fixes
 * Automatically adds missing braces around conditionals
 * Formats source files with clang-format
-
-
 
 ## 📥 Download Historical Data
 
@@ -245,19 +216,19 @@ The engine provides two different execution modes.
 
 Runs a single strategy configuration on historical market data and generates a detailed performance report.
 
-Example:
+Example :
 
 ```bash
 ./build/backtest data/btc.csv ma 10 50
 ```
 
-This command evaluates:
+This command evaluates :
 
 - Moving Average strategy
 - Short period = 10
 - Long period = 50
 
-and produces:
+and produces :
 
 - Trade history
 - ROI
@@ -272,20 +243,20 @@ This mode is useful when you already know which parameters you want to test.
 
 Automatically evaluates hundreds of strategy configurations and ranks them according to their risk-adjusted performance.
 
-Example:
+Example :
 
 ```bash
 ./build/backtest data/btc.csv optimize ma
 ```
 
-The optimizer:
+The optimizer :
 
 - Generates parameter combinations
 - Runs a full backtest for each configuration
 - Computes performance metrics
 - Ranks the results
 
-For the Moving Average strategy, the optimizer currently evaluates:
+For the Moving Average strategy, the optimizer currently evaluates :
 
 ```text
 460 configurations
@@ -327,8 +298,6 @@ With Stop-Loss :
 ./build/backtest data/btc.csv rsi 14 30 70 --sl 3
 ```
 
-
-
 ## 🔍 Parameter Optimization
 
 Optimize Moving Average parameters :
@@ -342,8 +311,6 @@ Optimize RSI parameters :
 ```bash
 ./build/backtest data/btc.csv optimize rsi
 ```
-
-
 
 ## 📄 Example Output
 
@@ -365,8 +332,6 @@ Optimize RSI parameters :
 ║ Win Rate        :          44.44%   ║
 ╚══════════════════════════════════════╝
 ```
-
-
 
 ## ➕ Adding a Custom Strategy
 
@@ -411,8 +376,6 @@ Then register it in `main.cpp`.
 
 No modifications to the backtesting engine are required.
 
-
-
 ## 💡 Technical Skills Demonstrated
 
 - Modern C++17
@@ -431,8 +394,6 @@ No modifications to the backtesting engine are required.
 This project is intended for educational purposes only.
 
 Backtested performance does not guarantee future results and should not be considered financial advice.
-
-
 
 ## 📄 License
 

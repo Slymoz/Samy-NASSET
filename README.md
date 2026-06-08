@@ -19,8 +19,22 @@ Each project is self-contained and includes its own documentation, build instruc
 
 A modular C++17 financial backtesting engine used to simulate and optimize algorithmic trading strategies on historical market data.
 
+#### Documentation
+
 - 📖 [Project README](./backtesting_engine/README.md)
-- 🔗 GitHub folder : https://github.com/Slymoz/Samy-NASSET/tree/main/backtesting_engine
+
+#### Quick Start
+
+```bash
+git clone https://github.com/Slymoz/Samy-NASSET.git
+cd Samy-NASSET/backtesting_engine
+
+./build.sh
+
+python3 download_data.py BTC-USD 2y 1d data/btc.csv
+
+./build/backtest data/btc.csv ma 10 50
+```
 
 ## License
 
