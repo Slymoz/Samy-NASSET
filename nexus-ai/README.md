@@ -237,4 +237,4 @@ server (via a real MCP client listing and calling tools) all start correctly.
 
 ## License
 
-MIT, like the rest of the repository.
+MIT, like the rest of the repository. See the [LICENSE](LICENSE) file.
