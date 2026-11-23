@@ -4,6 +4,18 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
+# Optional local settings (see .env.example). Variables already set win.
+if [[ -f .env ]]; then
+    while IFS='=' read -r key value; do
+        key="${key//[[:space:]]/}"
+        if [[ -z "$key" || "$key" == \#* ]]; then continue; fi
+        value="${value%$'\r'}"                       # tolerate CRLF files
+        [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]] && value="${BASH_REMATCH[1]}"
+        if [[ -z "${!key:-}" ]]; then export "$key=$value"; fi
+    done < .env
+fi
+
+HOST="${NEXUS_HOST:-127.0.0.1}"   # 0.0.0.0 inside Docker
 API_PORT="${NEXUS_API_PORT:-8000}"
 UI_PORT="${NEXUS_UI_PORT:-8501}"
 MCP_PORT="${NEXUS_MCP_PORT:-8001}"
@@ -18,7 +30,17 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
+# Fail early with a clear message instead of a half-started stack.
+for port in "$API_PORT" "$UI_PORT" "$MCP_PORT"; do
+    if (echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+        echo "Port $port is already in use (is Nexus already running?)." >&2
+        echo "Stop the other process or set NEXUS_API_PORT / NEXUS_UI_PORT / NEXUS_MCP_PORT." >&2
+        exit 1
+    fi
+done
+
 # Variables read by the Python services.
+export NEXUS_MCP_HOST="${NEXUS_MCP_HOST:-$HOST}"
 export NEXUS_MCP_PORT="$MCP_PORT"
 export NEXUS_MCP_URL="http://127.0.0.1:${MCP_PORT}/mcp"
 export NEXUS_API_URL="http://127.0.0.1:${API_PORT}"
@@ -46,15 +68,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "Starting FastAPI..."
-uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" &
+uvicorn app.main:app --host "$HOST" --port "$API_PORT" &
 PIDS+=("$!")
 
 echo "Starting Streamlit..."
 # --server.headless skips the first-run e-mail prompt (needed in CI).
 streamlit run frontend/streamlit_app.py \
-    --server.address 127.0.0.1 \
+    --server.address "$HOST" \
     --server.port "$UI_PORT" \
-    --server.headless true &
+    --server.headless true \
+    --browser.gatherUsageStats false &
 PIDS+=("$!")
 
 echo "Starting MCP server..."
