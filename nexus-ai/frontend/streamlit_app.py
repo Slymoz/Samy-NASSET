@@ -4,13 +4,14 @@ Talks to the FastAPI backend only (never to Ollama directly), so the UI stays
 a thin layer: chat with streaming, conversation history and document upload.
 """
 
+import contextlib
 import json
 import os
 
 import httpx
 import streamlit as st
 
-API_URL = os.getenv("NEXUS_API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("NEXUS_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
 st.set_page_config(page_title="Nexus AI", page_icon="✳️", layout="wide")
 
@@ -40,29 +41,32 @@ STYLE = """
 # --------------------------------------------------------------------------- #
 # API helpers
 # --------------------------------------------------------------------------- #
-def api_get(path: str):
-    response = httpx.get(f"{API_URL}{path}", timeout=10)
+def api_get(path: str, **kwargs):
+    response = httpx.get(f"{API_URL}{path}", timeout=10, **kwargs)
     response.raise_for_status()
     return response.json()
 
 
-def api_request(method: str, path: str, **kwargs):
-    response = httpx.request(method, f"{API_URL}{path}", timeout=30, **kwargs)
+def api_request(method: str, path: str, timeout: float = 30, **kwargs):
+    response = httpx.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
     response.raise_for_status()
     return response.json()
 
 
-def show_http_error(exc: httpx.HTTPError) -> None:
-    """Display the backend's error detail when there is one."""
+def http_error_message(exc: httpx.HTTPError) -> str:
+    """Return the backend's error detail when there is one."""
     response = getattr(exc, "response", None)
     if response is None:
-        st.error(f"Network error: {exc}")
-        return
+        return f"Network error: {exc}"
     try:
         detail = response.json().get("detail", response.text)
     except ValueError:
         detail = response.text
-    st.error(f"HTTP error {response.status_code}: {detail}")
+    return f"HTTP error {response.status_code}: {detail}"
+
+
+def show_http_error(exc: httpx.HTTPError) -> None:
+    st.error(http_error_message(exc))
 
 
 # --------------------------------------------------------------------------- #
@@ -74,10 +78,49 @@ def render_services(status: dict, api_ok: bool) -> None:
     st.write(f"{'🟢' if status.get('ollama') else '🔴'} Ollama")
     model = status.get("model_name", "Chat model")
     st.write(f"{'🟢' if status.get('model') else '🟠'} {model}")
-    st.write(f"{'🟢' if status.get('embedding_model') else '🟠'} Embedding model")
+    embed = status.get("embedding_model_name", "Embedding model")
+    st.write(f"{'🟢' if status.get('embedding_model') else '🟠'} {embed}")
     st.write(f"{'🟢' if status.get('mcp') else '🔴'} MCP server")
-    if st.button("Refresh status", use_container_width=True):
+    if status.get("ollama") and not status.get("model"):
+        st.caption(f"Run `ollama pull {model}` to enable chat.")
+    if st.button("Refresh status", width="stretch"):
         st.rerun()
+
+
+def render_conversation_tools(conversation_id: int, title: str) -> None:
+    """Rename, export and delete the selected conversation."""
+    with st.expander("Manage conversation"):
+        new_title = st.text_input("Title", value=title, key=f"title_{conversation_id}")
+        if st.button("Rename", width="stretch") and new_title.strip() != title:
+            try:
+                api_request(
+                    "PATCH", f"/api/conversations/{conversation_id}", json={"title": new_title}
+                )
+                st.rerun()
+            except httpx.HTTPError as exc:
+                show_http_error(exc)
+
+        try:
+            export_url = f"{API_URL}/api/conversations/{conversation_id}/export"
+            response = httpx.get(export_url, timeout=10)
+            response.raise_for_status()
+            st.download_button(
+                "Export as Markdown",
+                data=response.text,
+                file_name=f"nexus-conversation-{conversation_id}.md",
+                mime="text/markdown",
+                width="stretch",
+            )
+        except httpx.HTTPError:
+            st.caption("Export unavailable.")
+
+        if st.button("Delete this conversation", width="stretch"):
+            try:
+                api_request("DELETE", f"/api/conversations/{conversation_id}")
+                st.session_state.conversation_id = None
+                st.rerun()
+            except httpx.HTTPError as exc:
+                show_http_error(exc)
 
 
 def render_conversations() -> None:
@@ -88,7 +131,7 @@ def render_conversations() -> None:
     except httpx.HTTPError:
         conversations = []
 
-    if st.button("＋ New conversation", use_container_width=True):
+    if st.button("＋ New conversation", width="stretch"):
         try:
             created = api_request("POST", "/api/conversations")
             st.session_state.conversation_id = created["id"]
@@ -113,50 +156,56 @@ def render_conversations() -> None:
         index=ids.index(current),
         format_func=lambda cid: f"{titles[cid]} · #{cid}",
         label_visibility="collapsed",
-        key="conversation_selector",
     )
+    selected = st.session_state.conversation_id
+    render_conversation_tools(selected, titles[selected])
 
-    if st.button("Delete this conversation", use_container_width=True):
+
+def upload_files(files: list) -> None:
+    """Send each file to the API and report the result per file."""
+    for uploaded in files:
         try:
-            api_request(
-                "DELETE", f"/api/conversations/{st.session_state.conversation_id}"
-            )
-            st.rerun()
+            with st.spinner(f"Indexing {uploaded.name}..."):
+                result = api_request(
+                    "POST",
+                    "/api/documents",
+                    files={
+                        "file": (
+                            uploaded.name,
+                            uploaded.getvalue(),
+                            uploaded.type or "application/octet-stream",
+                        )
+                    },
+                    timeout=600,
+                )
+            if result.get("duplicate"):
+                st.info(f"{uploaded.name} is already indexed as {result['filename']}.")
+            else:
+                st.success(f"{result['filename']} indexed: {result['chunks']} passages.")
         except httpx.HTTPError as exc:
-            show_http_error(exc)
+            st.error(f"{uploaded.name}: {http_error_message(exc)}")
 
 
 def render_documents() -> None:
     st.subheader("RAG documents")
 
-    uploaded = st.file_uploader(
-        "Import a PDF, TXT or Markdown file", type=["pdf", "txt", "md"]
+    st.session_state.use_documents = st.toggle(
+        "Answer from my documents",
+        value=st.session_state.get("use_documents", True),
+        help="When off, Nexus answers without searching your documents.",
     )
 
-    if st.button("Index document", use_container_width=True):
-        if uploaded is None:
+    uploaded = st.file_uploader(
+        "Import PDF, TXT or Markdown files",
+        type=["pdf", "txt", "md"],
+        accept_multiple_files=True,
+    )
+
+    if st.button("Index documents", width="stretch"):
+        if not uploaded:
             st.warning("Choose a file first.")
         else:
-            try:
-                with st.spinner("Extracting and indexing..."):
-                    result = api_request(
-                        "POST",
-                        "/api/documents",
-                        files={
-                            "file": (
-                                uploaded.name,
-                                uploaded.getvalue(),
-                                uploaded.type or "application/octet-stream",
-                            )
-                        },
-                        timeout=240,
-                    )
-                st.success(
-                    f"{result['filename']} indexed: {result['chunks']} passages."
-                )
-                st.rerun()
-            except httpx.HTTPError as exc:
-                show_http_error(exc)
+            upload_files(uploaded)
 
     try:
         documents = api_get("/api/documents")
@@ -166,10 +215,13 @@ def render_documents() -> None:
 
     if not documents:
         st.caption("No document indexed.")
+        return
+
+    st.caption(f"{len(documents)} document(s), {sum(d['chunks'] for d in documents)} passages")
     for doc in documents:
         name_col, delete_col = st.columns([5, 1])
-        name_col.caption(f"📄 {doc['filename']}")
-        if delete_col.button("🗑", key=f"del_{doc['document_id']}"):
+        name_col.caption(f"📄 {doc['filename']} · {doc['chunks']}")
+        if delete_col.button("🗑", key=f"del_{doc['document_id']}", help="Delete"):
             try:
                 api_request("DELETE", f"/api/documents/{doc['document_id']}")
                 st.rerun()
@@ -183,11 +235,11 @@ def render_documents() -> None:
 def render_sources(sources: list[dict]) -> None:
     with st.expander(f"📚 Retrieved sources ({len(sources)})"):
         for index, source in enumerate(sources, 1):
-            st.markdown(
-                f"**{index}. {source['filename']}** — passage {source['chunk'] + 1}"
-            )
-            st.caption(source["text"])
-            st.caption(f"Cosine distance: {source['distance']:.4f}")
+            st.markdown(f"**{index}. {source['filename']}** — passage {source['chunk'] + 1}")
+            if source.get("text"):
+                st.caption(source["text"])
+            if source.get("distance") is not None:
+                st.caption(f"Cosine distance: {source['distance']:.4f}")
 
 
 def format_stats(stats: dict) -> str:
@@ -201,7 +253,7 @@ def format_stats(stats: dict) -> str:
     return " · ".join(parts) or "Generation finished."
 
 
-def stream_answer(prompt: str, conversation_id: int) -> None:
+def stream_answer(prompt: str, conversation_id: int, use_documents: bool = True) -> None:
     """Send the prompt and render the streamed answer as it arrives."""
     response_area = st.empty()
     status_area = st.empty()
@@ -210,35 +262,41 @@ def stream_answer(prompt: str, conversation_id: int) -> None:
     status_area.caption("⏳ Nexus is preparing the answer...")
 
     try:
-        with httpx.Client(timeout=None) as client:
-            with client.stream(
+        with (
+            httpx.Client(timeout=httpx.Timeout(600, connect=10)) as client,
+            client.stream(
                 "POST",
                 f"{API_URL}/api/chat/stream",
-                json={"message": prompt, "conversation_id": conversation_id},
-            ) as response:
-                if response.is_error:
-                    body = response.read().decode("utf-8", errors="replace")
-                    raise RuntimeError(f"HTTP error {response.status_code}: {body}")
+                json={
+                    "message": prompt,
+                    "conversation_id": conversation_id,
+                    "use_documents": use_documents,
+                },
+            ) as response,
+        ):
+            if response.is_error:
+                body = response.read().decode("utf-8", errors="replace")
+                with contextlib.suppress(ValueError):
+                    body = json.loads(body).get("detail", body)
+                raise RuntimeError(f"HTTP error {response.status_code}: {body}")
 
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    event = json.loads(line)
-                    kind = event.get("type")
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                event = json.loads(line)
+                kind = event.get("type")
 
-                    if kind == "meta":
-                        sources = event.get("sources", [])
-                        status_area.caption(
-                            f"⏳ Generating with {event.get('model', 'the model')}..."
-                        )
-                    elif kind == "token":
-                        answer += event.get("text", "")
-                        response_area.markdown(answer + " ▌")  # blinking cursor
-                    elif kind == "done":
-                        stats = event
-                        response_area.markdown(answer or "_Empty answer._")
-                    elif kind == "error":
-                        error = event.get("message", "Unknown generation error.")
+                if kind == "meta":
+                    sources = event.get("sources", [])
+                    status_area.caption(f"⏳ Generating with {event.get('model', 'the model')}...")
+                elif kind == "token":
+                    answer += event.get("text", "")
+                    response_area.markdown(answer + " ▌")  # blinking cursor
+                elif kind == "done":
+                    stats = event
+                    response_area.markdown(answer or "_Empty answer._")
+                elif kind == "error":
+                    error = event.get("message", "Unknown generation error.")
     except (httpx.HTTPError, ValueError, RuntimeError) as exc:
         error = str(exc)
 
@@ -263,7 +321,8 @@ def main() -> None:
 
     with st.sidebar:
         st.title("✳ Nexus AI")
-        st.caption("Local assistant and LLM lab")
+        version = f" · v{status['version']}" if status.get("version") else ""
+        st.caption(f"Local assistant and LLM lab{version}")
         st.divider()
         render_services(status, api_ok)
         st.divider()
@@ -290,13 +349,15 @@ def main() -> None:
     for message in history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message.get("sources"):
+                render_sources(message["sources"])
 
     prompt = st.chat_input("Ask Nexus something...")
     if prompt:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):
-            stream_answer(prompt, conversation_id)
+            stream_answer(prompt, conversation_id, st.session_state.get("use_documents", True))
         # No st.rerun() here: it would resubmit the same prompt. The backend
         # has already saved both messages, so they appear on the next run.
 

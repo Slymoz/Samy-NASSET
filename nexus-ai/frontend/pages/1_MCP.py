@@ -1,3 +1,5 @@
+"""MCP playground: a small MCP client to try every Nexus tool from the browser."""
+
 import asyncio
 import json
 import os
@@ -5,7 +7,7 @@ import time
 
 import streamlit as st
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 DEFAULT_URL = os.getenv("NEXUS_MCP_URL", "http://127.0.0.1:8001/mcp")
 
@@ -17,10 +19,12 @@ st.set_page_config(page_title="Nexus MCP", page_icon="🔌", layout="wide")
 # --------------------------------------------------------------------------- #
 async def _run(url, action):
     """Open a session, run one action on it, close the session."""
-    async with streamablehttp_client(url) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            return await action(session)
+    async with (
+        streamable_http_client(url) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        return await action(session)
 
 
 def run(url, action):
@@ -58,8 +62,11 @@ def render_field(tool_name, name, prop, required):
     if kind == "boolean":
         return st.checkbox(label, value=prop.get("default", False), key=key)
     if kind == "integer":
-        return st.number_input(label, value=int(prop.get("default", 1)), step=1, key=key)
-    return st.text_area(label, height=68, key=key)
+        default = prop.get("default", 1)  # ids start at 1
+        return st.number_input(label, value=1 if default is None else int(default), step=1, key=key)
+    if kind == "number":
+        return st.number_input(label, value=float(prop.get("default") or 0.0), key=key)
+    return st.text_area(label, value=prop.get("default") or "", height=68, key=key)
 
 
 def render_result(result, elapsed):
