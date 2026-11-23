@@ -2,5 +2,16 @@ line-length = 100
 target-version = "py310"
 
 [lint]
-# E = pycodestyle errors, F = pyflakes (unused imports/variables, undefined names)
-select = ["E", "F"]
+# E/W = pycodestyle, F = pyflakes, I = import order, B = bugbear (likely bugs),
+# UP = pyupgrade (modern syntax), SIM = simplifications, RUF = ruff-specific
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", # ambiguous unicode in strings: the UI uses symbols like "＋" on purpose
+]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[lint.flake8-bugbear]
+# FastAPI declares parameters through default values on purpose.
+extend-immutable-calls = ["fastapi.File", "fastapi.Query"]
