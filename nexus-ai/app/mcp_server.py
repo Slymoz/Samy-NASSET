@@ -13,8 +13,9 @@ Transports:
 import argparse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
-from app import config, llm, rag, storage
+from app import __version__, config, llm, rag, storage
 
 mcp = FastMCP(
     "Nexus",
@@ -29,29 +30,35 @@ mcp = FastMCP(
     port=config.MCP_PORT,
 )
 
+# Hints that let MCP clients decide when to ask the user for confirmation.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False
+)
 
-@mcp.tool()
+
+@mcp.tool(annotations=READ_ONLY)
 def list_documents() -> list[dict]:
     """List indexed documents (id, filename and number of passages)."""
     return rag.list_documents()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def search_documents(
-    query: str, limit: int = 4, document_id: str | None = None
+    query: str, limit: int = config.TOP_K, document_id: str | None = None
 ) -> list[dict]:
     """Semantic search over the indexed documents.
 
-    Returns the closest passages with filename, passage number and distance
-    (lower = more relevant). Pass ``document_id`` to search a single document.
+    Returns up to ``limit`` (max 10) passages with filename, passage number
+    and distance (lower = more relevant). Pass ``document_id`` to search a
+    single document.
     """
     return rag.search_documents(query, limit, document_id)
 
 
-@mcp.tool()
-def read_document(
-    document_id: str, start_chunk: int = 0, max_chunks: int = 10
-) -> dict:
+@mcp.tool(annotations=READ_ONLY)
+def read_document(document_id: str, start_chunk: int = 0, max_chunks: int = 10) -> dict:
     """Read a document passage by passage, in order.
 
     Use ``start_chunk`` and ``max_chunks`` to page through long documents;
@@ -71,15 +78,19 @@ def read_document(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def add_note(title: str, content: str) -> dict:
-    """Save a text note into the knowledge base so it becomes searchable."""
+    """Save a text note into the knowledge base so it becomes searchable.
+
+    Saving the exact same content twice returns the existing note
+    (``duplicate: true``).
+    """
     if not content.strip():
         raise ValueError("The note is empty.")
     return rag.index_text(title, content)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_document(document_id: str) -> dict:
     """Permanently remove a document (or note) from the knowledge base."""
     if not rag.delete_document(document_id):
@@ -87,21 +98,21 @@ def delete_document(document_id: str) -> dict:
     return {"deleted": document_id}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_conversations() -> list[dict]:
     """List past Nexus conversations, most recent first."""
     return storage.list_conversations()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_conversation(conversation_id: int, limit: int = 50) -> list[dict]:
-    """Return the last ``limit`` messages of a conversation."""
+    """Return the last ``limit`` messages of a conversation (oldest first)."""
     if not storage.conversation_exists(conversation_id):
         raise ValueError(f"Unknown conversation: {conversation_id}")
-    return storage.get_messages(conversation_id)[-max(1, limit):]
+    return storage.get_messages(conversation_id, limit=max(1, limit))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def ask_nexus(question: str, use_documents: bool = True) -> dict:
     """Ask the local LLM a question, optionally grounded in the documents.
 
@@ -111,14 +122,12 @@ def ask_nexus(question: str, use_documents: bool = True) -> dict:
     return {
         "answer": llm.generate_answer(question, sources=sources),
         "model": config.CHAT_MODEL,
-        "sources": [
-            {"filename": s["filename"], "chunk": s["chunk"]} for s in sources
-        ],
+        "sources": [{"filename": s["filename"], "chunk": s["chunk"]} for s in sources],
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Nexus MCP server")
+    parser = argparse.ArgumentParser(description=f"Nexus MCP server {__version__}")
     parser.add_argument(
         "--transport",
         choices=["streamable-http", "stdio"],

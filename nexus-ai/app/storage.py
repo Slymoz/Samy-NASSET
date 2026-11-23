@@ -1,5 +1,6 @@
 """SQLite persistence for conversations and messages."""
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from app import config
 
 DEFAULT_TITLE = "New conversation"
 VALID_ROLES = ("user", "assistant")
+TITLE_MAX_LENGTH = 80
 
 
 @contextmanager
@@ -36,8 +38,10 @@ def _now() -> str:
 
 
 def init_db() -> None:
-    """Create the schema (idempotent)."""
+    """Create the schema and apply migrations (idempotent)."""
     with connect() as db:
+        # WAL lets the API and the MCP server read while the other writes.
+        db.execute("PRAGMA journal_mode = WAL")
         db.executescript(
             f"""
             CREATE TABLE IF NOT EXISTS conversations (
@@ -63,24 +67,34 @@ def init_db() -> None:
             """
         )
 
+        # v2: sources used for an answer, stored as JSON (NULL for old rows).
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(messages)")}
+        if "sources" not in columns:
+            db.execute("ALTER TABLE messages ADD COLUMN sources TEXT")
+
 
 def create_conversation(title: str = DEFAULT_TITLE) -> int:
     timestamp = _now()
     with connect() as db:
         cursor = db.execute(
-            "INSERT INTO conversations (title, created_at, updated_at) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
             (title, timestamp, timestamp),
         )
         return cursor.lastrowid
 
 
-def conversation_exists(conversation_id: int) -> bool:
+def get_conversation(conversation_id: int) -> dict | None:
+    """Return a conversation's metadata, or None if it does not exist."""
     with connect() as db:
         row = db.execute(
-            "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+            "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?",
+            (conversation_id,),
         ).fetchone()
-    return row is not None
+    return dict(row) if row else None
+
+
+def conversation_exists(conversation_id: int) -> bool:
+    return get_conversation(conversation_id) is not None
 
 
 def list_conversations() -> list[dict]:
@@ -93,20 +107,41 @@ def list_conversations() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def delete_conversation(conversation_id: int) -> bool:
-    """Delete a conversation and its messages. Returns False if unknown."""
+def rename_conversation(conversation_id: int, title: str) -> bool:
+    """Rename a conversation. Returns False if unknown."""
+    title = " ".join(title.split())[:TITLE_MAX_LENGTH]
+    if not title:
+        raise ValueError("The title cannot be empty.")
     with connect() as db:
         cursor = db.execute(
-            "DELETE FROM conversations WHERE id = ?", (conversation_id,)
+            "UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id)
         )
         return cursor.rowcount > 0
 
 
-def add_message(conversation_id: int, role: str, content: str) -> None:
+def delete_conversation(conversation_id: int) -> bool:
+    """Delete a conversation and its messages. Returns False if unknown."""
+    with connect() as db:
+        cursor = db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        return cursor.rowcount > 0
+
+
+def _serialize_sources(sources: list[dict] | None) -> str | None:
+    """Serialise the passages an answer was based on (JSON)."""
+    if not sources:
+        return None
+    keep = ("document_id", "filename", "chunk", "text", "distance")
+    return json.dumps([{k: s[k] for k in keep if k in s} for s in sources])
+
+
+def add_message(
+    conversation_id: int, role: str, content: str, sources: list[dict] | None = None
+) -> None:
     """Append a message and bump the conversation's ``updated_at``.
 
     A conversation that still has the default title is named after its
-    first user message.
+    first user message. ``sources`` (retrieved passages) are kept for
+    assistant messages so the UI can show them again later.
     """
     if role not in VALID_ROLES:
         raise ValueError(f"Invalid message role: {role!r}")
@@ -120,9 +155,9 @@ def add_message(conversation_id: int, role: str, content: str) -> None:
             raise ValueError(f"Conversation {conversation_id} does not exist.")
 
         db.execute(
-            "INSERT INTO messages (conversation_id, role, content, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (conversation_id, role, content, timestamp),
+            "INSERT INTO messages (conversation_id, role, content, created_at, sources) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (conversation_id, role, content, timestamp, _serialize_sources(sources)),
         )
 
         title = row["title"]
@@ -135,12 +170,26 @@ def add_message(conversation_id: int, role: str, content: str) -> None:
         )
 
 
-def get_messages(conversation_id: int) -> list[dict]:
-    """Return a conversation's messages in chronological order."""
+def get_messages(conversation_id: int, limit: int | None = None) -> list[dict]:
+    """Return a conversation's messages in chronological order.
+
+    With ``limit``, only the most recent ``limit`` messages are returned.
+    """
+    query = (
+        "SELECT id, conversation_id, role, content, created_at, sources "
+        "FROM messages WHERE conversation_id = ? ORDER BY id DESC"
+    )
+    params: tuple = (conversation_id,)
+    if limit is not None:
+        query += " LIMIT ?"
+        params += (max(0, limit),)
+
     with connect() as db:
-        rows = db.execute(
-            "SELECT id, conversation_id, role, content, created_at "
-            "FROM messages WHERE conversation_id = ? ORDER BY id",
-            (conversation_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+        rows = db.execute(query, params).fetchall()
+
+    messages = []
+    for row in reversed(rows):
+        message = dict(row)
+        message["sources"] = json.loads(message["sources"]) if message["sources"] else []
+        messages.append(message)
+    return messages

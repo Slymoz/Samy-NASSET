@@ -4,14 +4,16 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
-from app import config, llm, rag, storage
+from app import __version__, config, llm, rag, storage
 
 
 @asynccontextmanager
@@ -20,12 +22,17 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Nexus AI", lifespan=lifespan)
+app = FastAPI(title="Nexus AI", version=__version__, lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     conversation_id: int | None = None
+    use_documents: bool = True  # False = plain chat, no document retrieval
+
+
+class RenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
 
 
 # Plain `def` endpoints below run in FastAPI's thread pool, so blocking calls
@@ -43,7 +50,17 @@ def root():
 @app.get("/api/health")
 def health():
     """Liveness probe: answers as soon as the API is up (no Ollama needed)."""
-    return {"status": "ok", "service": "FastAPI", "model": config.CHAT_MODEL}
+    return {
+        "status": "ok",
+        "service": "FastAPI",
+        "model": config.CHAT_MODEL,
+        "version": __version__,
+    }
+
+
+def _probe_host(host: str) -> str:
+    """A server bound to all interfaces is reached through the loopback."""
+    return "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
 
 
 @app.get("/api/status")
@@ -56,6 +73,8 @@ async def status():
         "embedding_model": False,
         "mcp": False,
         "model_name": config.CHAT_MODEL,
+        "embedding_model_name": config.EMBED_MODEL,
+        "version": __version__,
     }
 
     # Is Ollama running, and are the required models pulled?
@@ -71,13 +90,13 @@ async def status():
         result["ollama"] = True
         result["model"] = installed(config.CHAT_MODEL)
         result["embedding_model"] = installed(config.EMBED_MODEL)
-    except httpx.HTTPError:
-        pass
+    except (httpx.HTTPError, ValueError, AttributeError):
+        pass  # unreachable, or not an Ollama server
 
     # Is the MCP server accepting TCP connections?
     try:
         _, writer = await asyncio.wait_for(
-            asyncio.open_connection(config.MCP_HOST, config.MCP_PORT),
+            asyncio.open_connection(_probe_host(config.MCP_HOST), config.MCP_PORT),
             timeout=1.0,
         )
         result["mcp"] = True
@@ -102,6 +121,17 @@ def create_conversation():
     return {"id": storage.create_conversation(), "title": storage.DEFAULT_TITLE}
 
 
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation(conversation_id: int, request: RenameRequest):
+    try:
+        renamed = storage.rename_conversation(conversation_id, request.title)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not renamed:
+        raise HTTPException(404, "Conversation not found.")
+    return storage.get_conversation(conversation_id)
+
+
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: int):
     if not storage.delete_conversation(conversation_id):
@@ -116,9 +146,48 @@ def conversation_messages(conversation_id: int):
     return storage.get_messages(conversation_id)
 
 
+def conversation_to_markdown(conversation: dict, messages: list[dict]) -> str:
+    """Render a conversation as a Markdown document."""
+    exported = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"# {conversation['title']}", "", f"_Exported from Nexus AI on {exported}._", ""]
+    for message in messages:
+        author = "You" if message["role"] == "user" else "Nexus"
+        lines += [f"## {author}", "", message["content"], ""]
+        if message.get("sources"):
+            cited = ", ".join(
+                f"{s['filename']} (passage {s['chunk'] + 1})" for s in message["sources"]
+            )
+            lines += [f"> Sources: {cited}", ""]
+    return "\n".join(lines)
+
+
+@app.get("/api/conversations/{conversation_id}/export", response_class=PlainTextResponse)
+def export_conversation(conversation_id: int):
+    """Download a conversation as Markdown."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(404, "Conversation not found.")
+    markdown = conversation_to_markdown(conversation, storage.get_messages(conversation_id))
+    return PlainTextResponse(
+        markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="nexus-conversation-{conversation_id}.md"'
+        },
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Documents (RAG)
 # --------------------------------------------------------------------------- #
+def _embedding_error(exc: Exception) -> HTTPException:
+    return HTTPException(
+        502,
+        "Could not compute embeddings through Ollama. Make sure Ollama is "
+        f"running and '{config.EMBED_MODEL}' is installed. ({exc})",
+    )
+
+
 @app.get("/api/documents")
 def list_documents():
     try:
@@ -130,26 +199,33 @@ def list_documents():
 @app.post("/api/documents")
 async def upload_document(file: UploadFile = File(...)):
     try:
-        content = await file.read()
+        # Read at most one byte past the limit: never load a huge file in memory.
+        content = await file.read(config.MAX_UPLOAD_BYTES + 1)
         if len(content) > config.MAX_UPLOAD_BYTES:
-            raise ValueError(
-                f"File too large (limit: {config.MAX_UPLOAD_BYTES // 2**20} MB)."
-            )
-        return await run_in_threadpool(
-            rag.index_file, file.filename or "document.txt", content
-        )
+            raise ValueError(f"File too large (limit: {config.MAX_UPLOAD_BYTES // 2**20} MB).")
+        return await run_in_threadpool(rag.index_file, file.filename or "document.txt", content)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            502,
-            "Could not compute embeddings through Ollama. Make sure Ollama is "
-            f"running and '{config.EMBED_MODEL}' is installed.",
-        ) from exc
+        raise _embedding_error(exc) from exc
     except Exception as exc:
         raise HTTPException(500, f"Indexing failed: {exc}") from exc
     finally:
         await file.close()
+
+
+@app.get("/api/documents/{document_id}")
+def read_document(document_id: str):
+    """Return a document's passages in reading order."""
+    chunks = rag.get_document_chunks(document_id)
+    if not chunks:
+        raise HTTPException(404, "Document not found.")
+    return {
+        "document_id": document_id,
+        "filename": chunks[0]["filename"],
+        "total_chunks": len(chunks),
+        "passages": chunks,
+    }
 
 
 @app.delete("/api/documents/{document_id}")
@@ -157,6 +233,16 @@ def delete_document(document_id: str):
     if not rag.delete_document(document_id):
         raise HTTPException(404, "Document not found.")
     return {"deleted": document_id}
+
+
+@app.get("/api/search")
+def search(
+    q: str = Query(min_length=1, max_length=2000),
+    limit: int = Query(config.TOP_K, ge=1, le=config.MAX_TOP_K),
+    document_id: str | None = None,
+):
+    """Semantic search over the documents, without calling the chat model."""
+    return _search_or_raise(q, limit=limit, document_id=document_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -171,30 +257,32 @@ def _resolve_conversation(conversation_id: int | None) -> int:
     return conversation_id
 
 
-def _search_or_raise(message: str) -> list[dict]:
+def _search_or_raise(message: str, **kwargs) -> list[dict]:
     """Retrieve relevant passages, translating failures into HTTP errors."""
     try:
-        return rag.search_documents(message)
+        return rag.search_documents(message, **kwargs)
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            502,
-            "Could not compute embeddings. Check Ollama and "
-            f"'{config.EMBED_MODEL}'.",
-        ) from exc
+        raise _embedding_error(exc) from exc
     except Exception as exc:
         raise HTTPException(500, f"Document search failed: {exc}") from exc
 
 
-@app.post("/api/chat")
-def chat(request: ChatRequest):
-    """Non-streaming chat. Handy for scripts; the UI uses /api/chat/stream."""
+def _prepare_turn(request: ChatRequest) -> tuple[str, int, list[dict], list[dict]]:
+    """Validate the request and gather what the model needs for this turn."""
     message = request.message.strip()
     if not message:
         raise HTTPException(400, "Empty message.")
 
     conversation_id = _resolve_conversation(request.conversation_id)
-    history = storage.get_messages(conversation_id)
-    sources = _search_or_raise(message)
+    history = storage.get_messages(conversation_id, limit=config.HISTORY_MESSAGES)
+    sources = _search_or_raise(message) if request.use_documents else []
+    return message, conversation_id, history, sources
+
+
+@app.post("/api/chat")
+def chat(request: ChatRequest):
+    """Non-streaming chat. Handy for scripts; the UI uses /api/chat/stream."""
+    message, conversation_id, history, sources = _prepare_turn(request)
 
     # Save the question first so it is kept even if generation fails.
     storage.add_message(conversation_id, "user", message)
@@ -204,7 +292,7 @@ def chat(request: ChatRequest):
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Ollama communication error: {exc}") from exc
 
-    storage.add_message(conversation_id, "assistant", answer)
+    storage.add_message(conversation_id, "assistant", answer, sources)
     return {
         "answer": answer,
         "conversation_id": conversation_id,
@@ -220,15 +308,7 @@ def _event(payload: dict) -> str:
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat as NDJSON events: meta, token*, then done or error."""
-    message = request.message.strip()
-    if not message:
-        raise HTTPException(400, "Empty message.")
-
-    conversation_id = await run_in_threadpool(
-        _resolve_conversation, request.conversation_id
-    )
-    history = await run_in_threadpool(storage.get_messages, conversation_id)
-    sources = await run_in_threadpool(_search_or_raise, message)
+    message, conversation_id, history, sources = await run_in_threadpool(_prepare_turn, request)
     messages = llm.build_messages(message, history, sources)
     await run_in_threadpool(storage.add_message, conversation_id, "user", message)
 
@@ -268,6 +348,7 @@ async def chat_stream(request: ChatRequest):
             conversation_id,
             "assistant",
             "".join(answer_parts),
+            sources,
         )
 
         # Ollama reports generation time in nanoseconds.
