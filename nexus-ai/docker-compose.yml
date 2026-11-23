@@ -1,0 +1,48 @@
+# One-command setup: Ollama + model download + Nexus AI.
+#   docker compose up -d        then open http://localhost:8501
+# Ports are published on 127.0.0.1 only: the services have no authentication.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Pulls the models once, then exits (models are kept in the ollama volume).
+  ollama-models:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["sh", "-c"]
+    command:
+      - ollama pull "${NEXUS_CHAT_MODEL:-llama3.2:1b}" && ollama pull "${NEXUS_EMBED_MODEL:-nomic-embed-text}"
+    restart: "no"
+
+  nexus:
+    build: .
+    image: nexus-ai:local
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      NEXUS_OLLAMA_URL: http://ollama:11434
+      NEXUS_CHAT_MODEL: ${NEXUS_CHAT_MODEL:-llama3.2:1b}
+      NEXUS_EMBED_MODEL: ${NEXUS_EMBED_MODEL:-nomic-embed-text}
+    ports:
+      - "127.0.0.1:8501:8501" # web UI
+      - "127.0.0.1:8000:8000" # REST API
+      - "127.0.0.1:8001:8001" # MCP server
+    volumes:
+      - nexus-data:/data
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  nexus-data:
