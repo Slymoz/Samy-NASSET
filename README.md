@@ -49,14 +49,27 @@ pip install -r requirements.txt
 ./start.sh                     # UI on http://localhost:8501
 ```
 
+Or with Docker, Ollama and the models included:
+
+```bash
+cd Samy-NASSET/nexus-ai
+docker compose up -d --build   # UI on http://localhost:8501
+```
+
 See the [Nexus AI README](nexus-ai/README.md) for configuration, MCP setup and troubleshooting.
 
-## Continuous integration
+## Continuous integration and delivery
 
-Two GitHub Actions workflows run on every push and pull request:
+GitHub Actions workflows run on every push and pull request:
 
 - **C++ CI**: builds the backtesting engine and runs the lint checks.
-- **Nexus AI CI**: installs the dependencies in a venv, runs `ruff` and `pytest`, then starts the full stack with `start.sh` and checks that the API, the web UI and the MCP server respond.
+- **Nexus AI CI/CD** (on changes under `nexus-ai/`): `ruff` lint and format
+  check, ~80 tests with coverage on Python 3.10 to 3.13, a smoke test that
+  starts the full stack with `start.sh`, and a Docker image build checked in a
+  running container. On `main` and on `nexus-ai-v*` tags, the image is
+  published to the GitHub Container Registry.
+
+Dependabot proposes weekly dependency updates.
 
 ## License
 
