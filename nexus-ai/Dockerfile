@@ -1,7 +1,7 @@
 # Nexus AI: API + web UI + MCP server in one image.
 # Ollama runs separately (see docker-compose.yml, or point NEXUS_OLLAMA_URL
 # at an Ollama already running on the host).
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
