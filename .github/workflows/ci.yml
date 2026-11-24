@@ -1,42 +1,119 @@
-name: C++ CI (Build & Lint)
+name: C++ CI (Backtesting Engine)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
+    paths:
+      - "backtesting_engine/**"
+      - ".github/workflows/ci.yml"
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+    paths:
+      - "backtesting_engine/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backtesting-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backtesting_engine
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: backtesting_engine
-
+  lint:
+    name: Lint (clang-format & clang-tidy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          clang-format \
-          clang-tidy \
-          python3 \
-          python3-pip
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang-format-18 clang-tidy-18
+          sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
+          sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
 
-    - name: Make scripts executable
-      run: chmod +x lint.sh build.sh
+      # Produces compile_commands.json for clang-tidy and downloads the
+      # GoogleTest sources the tests include.
+      - name: Configure
+        run: cmake -S . -B build -G Ninja
 
-    - name: Configure CMake & Export Commands
-      run: cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Check formatting and lint
+        run: ./lint.sh --check
 
-    - name: Run Linter (Clang-Format / Clang-Tidy)
-      run: ./lint.sh
+  build-and-test:
+    name: Build & test (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cxx: g++
+          - compiler: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Compile Project
-      run: cmake --build build -j$(nproc)
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Configure (warnings as errors)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DBACKTEST_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Unit tests
+        run: cd build && ctest --output-on-failure
+
+      - name: Smoke test (CLI on real data)
+        run: |
+          ./build/backtest data/btc.csv ma 10 50 --sl 5 --tp 20 --export results
+          ./build/backtest data/btc.csv rsi 14 30 70 --quiet
+          ./build/backtest data/btc.csv optimize ma
+          ./build/backtest data/btc.csv optimize rsi --train 1
+          test -s results/equity.csv && test -s results/trades.csv
+          # Invalid input must fail with a usage error, not crash.
+          if ./build/backtest data/btc.csv ma 50 10; then exit 1; fi
+          if ./build/backtest data/btc.csv ma --sl abc; then exit 1; fi
+
+  sanitizers:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBACKTEST_SANITIZERS=ON
+          -DBACKTEST_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Unit tests
+        run: cd build && ctest --output-on-failure
+
+      - name: Smoke test
+        run: |
+          ./build/backtest data/btc.csv ma 10 50 --sl 5 --tp 20 --quiet
+          ./build/backtest data/btc.csv optimize ma
+          ./build/backtest data/btc.csv optimize rsi
