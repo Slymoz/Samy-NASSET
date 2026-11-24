@@ -1,18 +1,63 @@
-import yfinance as yf
+"""Download OHLCV candles from Yahoo Finance into the CSV format of the engine.
+
+Usage:
+    python3 download_data.py [SYMBOL] [PERIOD] [INTERVAL] [OUTPUT]
+
+Examples:
+    python3 download_data.py BTC-USD 2y 1d data/btc.csv
+    python3 download_data.py ETH-USD 1y 1h data/eth.csv
+"""
+
+import argparse
 import sys
+from pathlib import Path
 
-# Parameters (can be overridden by command-line arguments)
-symbol    = sys.argv[1] if len(sys.argv) > 1 else "BTC-USD"
-period    = sys.argv[2] if len(sys.argv) > 2 else "2y"      # 2 years
-interval  = sys.argv[3] if len(sys.argv) > 3 else "1d"      # daily candles
-output    = sys.argv[4] if len(sys.argv) > 4 else "data/btc.csv"
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover
+    sys.exit("yfinance is not installed: python3 -m pip install -r requirements.txt")
 
-print(f"Downloading {symbol} ({period}, {interval})...")
+COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
-df = yf.download(symbol, period=period, interval=interval)
-df = df[["Open", "High", "Low", "Close", "Volume"]]
-df.index.name = "timestamp"
-df.columns    = ["open", "high", "low", "close", "volume"]
 
-df.to_csv(output)
-print(f"{len(df)} candles saved to {output}")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("symbol", nargs="?", default="BTC-USD", help="ticker (default: BTC-USD)")
+    parser.add_argument("period", nargs="?", default="2y", help="history length, e.g. 1y, 2y, max")
+    parser.add_argument("interval", nargs="?", default="1d", help="candle size, e.g. 1d, 1h")
+    parser.add_argument("output", nargs="?", default="data/btc.csv", help="CSV file to write")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    print(f"Downloading {args.symbol} ({args.period}, {args.interval})...")
+
+    df = yf.download(
+        args.symbol,
+        period=args.period,
+        interval=args.interval,
+        auto_adjust=False,
+        progress=False,
+    )
+    if df is None or df.empty:
+        print(f"No data returned for {args.symbol}.", file=sys.stderr)
+        return 1
+
+    # Recent yfinance versions return (field, ticker) column pairs.
+    if df.columns.nlevels > 1:
+        df.columns = df.columns.get_level_values(0)
+
+    df = df[COLUMNS].dropna()
+    df.index.name = "timestamp"
+    df.columns = [c.lower() for c in COLUMNS]
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output)
+    print(f"{len(df)} candles saved to {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
