@@ -1,10 +1,22 @@
 Checks: >
   -*,
-  readability-braces-around-statements
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  -performance-enum-size,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-emplace,
+  modernize-loop-convert,
+  readability-braces-around-statements,
+  readability-container-size-empty,
+  readability-redundant-string-init,
+  misc-unused-using-decls
 
 CheckOptions:
   - key: readability-braces-around-statements.ShortStatementLines
     value: '0'
 
 WarningsAsErrors: ''
-HeaderFilterRegex: '.*'
+# Only our own headers (third-party code such as GoogleTest lives in build/).
+HeaderFilterRegex: '(include|src)/.*\.hpp$'
