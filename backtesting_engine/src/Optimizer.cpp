@@ -1,253 +1,176 @@
-#include "../include/Optimizer.hpp"
-#include "../src/strategies/MovingAverageCrossover.hpp"
-#include "../src/strategies/RSIStrategy.hpp"
+#include "Optimizer.hpp"
 
-#include <iostream>
-#include <iomanip>
+#include "strategies/RSIStrategy.hpp"
+
 #include <algorithm>
-#include <chrono>
+#include <atomic>
+#include <cmath>
+#include <exception>
+#include <mutex>
 #include <sstream>
+#include <stdexcept>
+#include <thread>
 
-Optimizer::Optimizer(const std::vector<Candle> &candles, double initialCapital, double feeRate)
-    : m_candles(candles),
-      m_initialCapital(initialCapital),
-      m_feeRate(feeRate) {}
+namespace {
 
-double Optimizer::score(const OptimResult &r) {
-    if (r.totalTrades < 3) {
-        return -9999.0;
-    }
-    return (r.roi * r.profitFactor) / (1.0 + r.maxDrawdown);
-}
+constexpr double PF_CAP = 10.0;
+constexpr double NOT_RANKED = -1e9;
 
-static OptimResult runSingle(Strategy &strategy, const std::string &label, double sl, double tp,
-                             const std::vector<Candle> &candles, double capital, double feeRate) {
+std::string riskSuffix(double sl, double tp) {
+    std::ostringstream out;
     if (sl > 0.0) {
-        strategy.setStopLoss(sl);
+        out << " SL=" << sl << "%";
     }
     if (tp > 0.0) {
-        strategy.setTakeProfit(tp);
+        out << " TP=" << tp << "%";
     }
-
-    Portfolio portfolio(capital, feeRate);
-    BacktestResult result = portfolio.run(candles, strategy, true);
-
-    return OptimResult{label, result.roi, result.maxDrawdown, result.winRate, result.profitFactor, result.totalTrades,
-                       sl,    tp};
+    return out.str();
 }
 
-std::vector<OptimResult> Optimizer::runMA(const std::vector<int> &shortPeriods, const std::vector<int> &longPeriods,
-                                          const std::vector<double> &stopLosses,
-                                          const std::vector<double> &takeProfits) {
-    std::vector<OptimResult> results;
+// Run `count` independent jobs on `threads` threads; rethrow the first error.
+void parallelFor(std::size_t count, unsigned threads, const std::function<void(std::size_t)> &job) {
+    std::atomic<std::size_t> next{0};
+    std::exception_ptr error;
+    std::mutex errorMutex;
 
-    int total = 0;
-    for (int s : shortPeriods) {
-        for (int l : longPeriods) {
-            if (s < l) {
-                total += static_cast<int>(stopLosses.size() * takeProfits.size());
-            }
-        }
-    }
-
-    std::cout << "\n[Optimizer] MA Crossover — " << total << " configurations to test...\n\n";
-
-    int count = 0;
-    for (int shortP : shortPeriods) {
-        for (int longP : longPeriods) {
-            if (shortP >= longP) {
-                continue;
-            }
-
-            for (double sl : stopLosses) {
-                for (double tp : takeProfits) {
-                    std::ostringstream oss;
-                    oss << "MA(" << shortP << "/" << longP << ")";
-                    if (sl > 0.0) {
-                        oss << " SL=" << sl << "%";
-                    }
-                    if (tp > 0.0) {
-                        oss << " TP=" << tp << "%";
-                    }
-
-                    MovingAverageCrossover strategy(shortP, longP, m_feeRate);
-
-                    auto res = runSingle(strategy, oss.str(), sl, tp, m_candles, m_initialCapital, m_feeRate);
-
-                    results.push_back(res);
-
-                    ++count;
-                    std::cout << "\r  Progression : " << count << "/" << total << " (" << std::fixed
-                              << std::setprecision(0) << (100.0 * count / total) << "%)   " << std::flush;
+    auto worker = [&]() {
+        for (std::size_t i = next++; i < count; i = next++) {
+            try {
+                job(i);
+            } catch (...) {
+                const std::lock_guard<std::mutex> lock(errorMutex);
+                if (!error) {
+                    error = std::current_exception();
                 }
             }
         }
-    }
-
-    std::cout << "\n";
-    return results;
-}
-
-std::vector<OptimResult> Optimizer::runRSI(const std::vector<int> &periods, const std::vector<double> &oversolds,
-                                           const std::vector<double> &overboughts,
-                                           const std::vector<double> &stopLosses,
-                                           const std::vector<double> &takeProfits) {
-    std::vector<OptimResult> results;
-
-    int total = static_cast<int>(periods.size() * oversolds.size() * overboughts.size() * stopLosses.size() *
-                                 takeProfits.size());
-
-    std::cout << "\n[Optimizer] RSI — " << total << " configurations to test...\n\n";
-
-    int count = 0;
-    for (int period : periods) {
-        for (double os : oversolds) {
-            for (double ob : overboughts) {
-                if (os >= ob) {
-                    continue;
-                }
-
-                for (double sl : stopLosses) {
-                    for (double tp : takeProfits) {
-                        std::ostringstream oss;
-                        oss << "RSI(" << period << " OS=" << os << " OB=" << ob << ")";
-                        if (sl > 0.0) {
-                            oss << " SL=" << sl << "%";
-                        }
-                        if (tp > 0.0) {
-                            oss << " TP=" << tp << "%";
-                        }
-
-                        RSIStrategy strategy(period, os, ob, m_feeRate);
-
-                        auto res = runSingle(strategy, oss.str(), sl, tp, m_candles, m_initialCapital, m_feeRate);
-
-                        results.push_back(res);
-
-                        ++count;
-                        std::cout << "\r  Progression : " << count << "/" << total << " (" << std::fixed
-                                  << std::setprecision(0) << (100.0 * count / total) << "%)   " << std::flush;
-                    }
-                }
-            }
-        }
-    }
-
-    std::cout << "\n";
-    return results;
-}
-
-void Optimizer::printResults(const std::vector<OptimResult> &results, const std::string &stratName) {
-    if (results.empty()) {
-        std::cout << "[Optimizer] No results found.\n";
-        return;
-    }
-
-    auto sorted = results;
-    std::sort(sorted.begin(), sorted.end(),
-              [](const OptimResult &a, const OptimResult &b) { return Optimizer::score(a) > Optimizer::score(b); });
-
-    const auto &best = sorted.front();
-
-    const int cConfig = 34;
-    const int cROI = 9;
-    const int cMaxDD = 9;
-    const int cWR = 8;
-    const int cPF = 8;
-    const int cTrades = 8;
-
-    auto sep = [&]() {
-        std::cout << "+";
-        for (int i = 0; i < cConfig + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+";
-        for (int i = 0; i < cROI + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+";
-        for (int i = 0; i < cMaxDD + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+";
-        for (int i = 0; i < cWR + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+";
-        for (int i = 0; i < cPF + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+";
-        for (int i = 0; i < cTrades + 2; ++i) {
-            std::cout << "-";
-        }
-        std::cout << "+\n";
     };
 
-    const int totalW = cConfig + cROI + cMaxDD + cWR + cPF + cTrades + 19;
-
-    std::cout << "\n";
-
-    std::cout << "+";
-    for (int i = 0; i < totalW - 2; ++i) {
-        std::cout << "-";
+    const unsigned n = std::max(1u, std::min<unsigned>(threads, static_cast<unsigned>(count)));
+    std::vector<std::thread> pool;
+    pool.reserve(n - 1);
+    for (unsigned t = 1; t < n; ++t) {
+        pool.emplace_back(worker);
     }
-    std::cout << "+\n";
+    worker();
+    for (auto &thread : pool) {
+        thread.join();
+    }
+    if (error) {
+        std::rethrow_exception(error);
+    }
+}
 
-    std::string title = " OPTIMISATION : " + stratName;
-    std::cout << "|" << std::left << std::setw(totalW - 2) << title << "|\n";
+} // namespace
 
-    sep();
+Optimizer::Optimizer(std::vector<Candle> candles, BacktestConfig baseConfig, OptimizerOptions options)
+    : m_candles(std::move(candles)),
+      m_baseConfig(baseConfig),
+      m_options(options),
+      m_split(0) {
+    if (m_candles.empty()) {
+        throw std::invalid_argument("No data to optimize on.");
+    }
+    if (!(m_options.trainRatio > 0.0 && m_options.trainRatio <= 1.0)) {
+        throw std::invalid_argument("The train ratio must be in (0, 1]");
+    }
+    if (m_options.threads == 0) {
+        m_options.threads = std::max(1u, std::thread::hardware_concurrency());
+    }
+    const auto bars = static_cast<double>(m_candles.size());
+    m_split = static_cast<std::size_t>(std::floor(bars * m_options.trainRatio));
+    m_split = std::clamp<std::size_t>(m_split, 1, m_candles.size());
+}
 
-    std::cout << "| " << std::left << std::setw(cConfig) << "Configuration" << " | " << std::right << std::setw(cROI)
-              << "ROI" << " | " << std::setw(cMaxDD) << "MaxDD" << " | " << std::setw(cWR) << "W%" << " | "
-              << std::setw(cPF) << "PF" << " | " << std::setw(cTrades) << "Trades" << " |\n";
+double Optimizer::score(const BacktestResult &r, int minTrades) {
+    if (r.totalTrades < minTrades) {
+        return NOT_RANKED;
+    }
+    if (r.roi <= 0.0) {
+        return r.roi;
+    }
+    return r.roi * std::min(r.profitFactor, PF_CAP) / (1.0 + r.maxDrawdown);
+}
 
-    sep();
+std::vector<OptimResult> Optimizer::run(const std::vector<StrategyFactory> &factories, std::vector<double> stopLosses,
+                                        std::vector<double> takeProfits) const {
+    if (stopLosses.empty()) {
+        stopLosses.push_back(0.0);
+    }
+    if (takeProfits.empty()) {
+        takeProfits.push_back(0.0);
+    }
 
-    int shown = 0;
-    for (const auto &r : sorted) {
-        if (shown >= 10) {
-            break;
+    // Indicators are computed once per parameter set, then shared (read-only)
+    // by every stop-loss / take-profit variant.
+    std::vector<std::unique_ptr<Strategy>> strategies(factories.size());
+    parallelFor(factories.size(), m_options.threads, [&](std::size_t i) {
+        strategies[i] = factories[i]();
+        strategies[i]->prepare(m_candles);
+    });
+
+    const std::size_t perStrategy = stopLosses.size() * takeProfits.size();
+    std::vector<OptimResult> results(strategies.size() * perStrategy);
+    const bool hasTest = m_split < m_candles.size();
+
+    parallelFor(results.size(), m_options.threads, [&](std::size_t job) {
+        const Strategy &strategy = *strategies[job / perStrategy];
+        const double sl = stopLosses[(job % perStrategy) / takeProfits.size()];
+        const double tp = takeProfits[job % takeProfits.size()];
+
+        BacktestConfig config = m_baseConfig;
+        config.stopLossPct = sl;
+        config.takeProfitPct = tp;
+        const Backtester backtester(config);
+
+        OptimResult &out = results[job];
+        out.label = strategy.name() + riskSuffix(sl, tp);
+        out.stopLossPct = sl;
+        out.takeProfitPct = tp;
+        out.train = backtester.simulate(m_candles, strategy, 0, m_split);
+        out.score = score(out.train, m_options.minTrades);
+        if (hasTest) {
+            out.test = backtester.simulate(m_candles, strategy, m_split, m_candles.size());
         }
-
-        std::string marker = (shown == 0) ? "* " : "  ";
-        std::string label = r.label;
-        if (label.size() > static_cast<size_t>(cConfig - 2)) {
-            label = label.substr(0, cConfig - 2);
+        // The curves are not needed for the ranking: keep memory low.
+        out.train.equityCurve.clear();
+        out.train.trades.clear();
+        if (out.test) {
+            out.test->equityCurve.clear();
+            out.test->trades.clear();
         }
+    });
 
-        std::ostringstream sROI, sMaxDD, sWR, sPF;
-        sROI << std::fixed << std::setprecision(2) << r.roi << "%";
-        sMaxDD << std::fixed << std::setprecision(2) << r.maxDrawdown << "%";
-        sWR << std::fixed << std::setprecision(1) << r.winRate << "%";
-        sPF << std::fixed << std::setprecision(2) << r.profitFactor;
+    std::stable_sort(results.begin(), results.end(),
+                     [](const OptimResult &a, const OptimResult &b) { return a.score > b.score; });
+    return results;
+}
 
-        std::cout << "| " << marker << std::left << std::setw(cConfig - 2) << label << " | " << std::right
-                  << std::setw(cROI) << sROI.str() << " | " << std::setw(cMaxDD) << sMaxDD.str() << " | "
-                  << std::setw(cWR) << sWR.str() << " | " << std::setw(cPF) << sPF.str() << " | " << std::setw(cTrades)
-                  << r.totalTrades << " |\n";
-        ++shown;
+std::vector<OptimResult> Optimizer::runMA(const MaGrid &grid) const {
+    std::vector<StrategyFactory> factories;
+    for (std::size_t shortP : grid.shortPeriods) {
+        for (std::size_t longP : grid.longPeriods) {
+            if (shortP == 0 || shortP >= longP) {
+                continue;
+            }
+            const MaType type = grid.type;
+            factories.emplace_back([=]() { return std::make_unique<MovingAverageCrossover>(shortP, longP, type); });
+        }
     }
+    return run(factories, grid.stopLosses, grid.takeProfits);
+}
 
-    sep();
-
-    std::string bestLabel = " BEST : " + best.label;
-    if (bestLabel.size() > static_cast<size_t>(totalW - 2)) {
-        bestLabel = bestLabel.substr(0, totalW - 2);
+std::vector<OptimResult> Optimizer::runRSI(const RsiGrid &grid) const {
+    std::vector<StrategyFactory> factories;
+    for (std::size_t period : grid.periods) {
+        for (double oversold : grid.oversolds) {
+            for (double overbought : grid.overboughts) {
+                if (period == 0 || oversold >= overbought) {
+                    continue;
+                }
+                factories.emplace_back([=]() { return std::make_unique<RSIStrategy>(period, oversold, overbought); });
+            }
+        }
     }
-
-    std::cout << "|" << std::left << std::setw(totalW - 2) << bestLabel << "|\n";
-
-    std::ostringstream summary;
-    summary << " ROI: " << std::fixed << std::setprecision(2) << best.roi << "%" << "  |  MaxDD: " << best.maxDrawdown
-            << "%" << "  |  PF: " << best.profitFactor << "  |  Trades: " << best.totalTrades;
-
-    std::cout << "|" << std::left << std::setw(totalW - 2) << summary.str() << "|\n";
-
-    std::cout << "+";
-    for (int i = 0; i < totalW - 2; ++i) {
-        std::cout << "-";
-    }
-    std::cout << "+\n";
+    return run(factories, grid.stopLosses, grid.takeProfits);
 }
