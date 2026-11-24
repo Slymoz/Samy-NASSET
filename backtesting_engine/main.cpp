@@ -1,143 +1,177 @@
-#include <iostream>
-#include <string>
-#include <memory>
-#include <stdexcept>
+#include "Backtester.hpp"
+#include "Cli.hpp"
+#include "DataParser.hpp"
+#include "Optimizer.hpp"
+#include "Report.hpp"
+#include "strategies/MovingAverageCrossover.hpp"
+#include "strategies/RSIStrategy.hpp"
+
 #include <chrono>
-#include <iomanip>
+#include <cmath>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "include/DataParser.hpp"
-#include "include/Portfolio.hpp"
-#include "include/Optimizer.hpp"
-#include "src/strategies/MovingAverageCrossover.hpp"
-#include "src/strategies/RSIStrategy.hpp"
+namespace {
 
-void printUsage(const char *progName) {
-    std::cout << "Usage: " << progName << " <csv> <strategie> [options]\n\n"
-              << "Strategies:\n"
-              << "  ma  <short> <long>               Moving Average Crossover\n"
-              << "  rsi <period> <oversold> <overbought>  RSI\n\n"
-              << "Optimization Mode:\n"
-              << "  optimize ma                      Tests all MA configurations\n"
-              << "  optimize rsi                     Tests all RSI configurations\n\n"
-              << "Options:\n"
-              << "  --sl <percent>   Stop-loss\n"
-              << "  --tp <percent>   Take-profit\n\n"
-              << "Examples:\n"
-              << "  " << progName << " data/btc.csv ma 10 50 --sl 5\n"
-              << "  " << progName << " data/btc.csv optimize ma\n"
-              << "  " << progName << " data/btc.csv optimize rsi\n";
-}
-
-double parseFlag(int argc, char *argv[], const std::string &flag, double def) {
-    for (int i = 1; i < argc - 1; ++i) {
-        if (std::string(argv[i]) == flag) {
-            return std::stod(argv[i + 1]);
-        }
+std::size_t toPeriod(double value, const std::string &what) {
+    if (value < 1.0 || value != std::floor(value)) {
+        throw CliError(what + " must be a positive integer");
     }
-    return def;
+    return static_cast<std::size_t>(value);
 }
 
-bool hasFlag(int argc, char *argv[], const std::string &flag) {
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == flag) {
-            return true;
-        }
+std::unique_ptr<Strategy> makeStrategy(const CliOptions &options) {
+    const auto &p = options.params;
+    if (options.command == Command::MA) {
+        return std::make_unique<MovingAverageCrossover>(toPeriod(p[0], "short period"), toPeriod(p[1], "long period"),
+                                                        options.useEma ? MaType::EMA : MaType::SMA);
     }
-    return false;
+    return std::make_unique<RSIStrategy>(toPeriod(p[0], "RSI period"), p[1], p[2]);
 }
+
+std::string costsDescription(const BacktestConfig &config) {
+    std::string text = "Capital $" + Report::formatNumber(config.initialCapital) + " | fee " +
+                       Report::formatNumber(config.feeRate * 100.0, 3) + "% | slippage " +
+                       Report::formatNumber(config.slippageRate * 100.0, 3) + "% | " +
+                       Report::formatNumber(config.periodsPerYear, 0) + " bars/year";
+    if (config.stopLossPct > 0.0) {
+        text += " | SL " + Report::formatNumber(config.stopLossPct) + "%";
+    }
+    if (config.takeProfitPct > 0.0) {
+        text += " | TP " + Report::formatNumber(config.takeProfitPct) + "%";
+    }
+    return text;
+}
+
+int runBacktest(const std::vector<Candle> &candles, const CliOptions &options) {
+    auto strategy = makeStrategy(options);
+    const Backtester backtester(options.config);
+    const BacktestResult result = backtester.run(candles, *strategy);
+
+    std::cout << "[Backtest] " << strategy->name() << "\n";
+    if (!options.quiet) {
+        Report::printTrades(std::cout, result.trades);
+    }
+    Report::printSummary(std::cout, result, strategy->name());
+
+    if (!options.exportDir.empty()) {
+        std::filesystem::create_directories(options.exportDir);
+        const std::filesystem::path dir(options.exportDir);
+        Report::writeEquityCsv((dir / "equity.csv").string(), result.equityCurve);
+        Report::writeTradesCsv((dir / "trades.csv").string(), result.trades);
+        std::cout << "\nExported equity.csv and trades.csv to " << options.exportDir << "\n";
+    }
+    return 0;
+}
+
+int runOptimization(const std::vector<Candle> &candles, const CliOptions &options) {
+    if (!options.exportDir.empty()) {
+        throw CliError("--export is only available for a single backtest");
+    }
+
+    OptimizerOptions optimizerOptions;
+    optimizerOptions.trainRatio = options.trainRatio;
+    optimizerOptions.threads = options.threads;
+    const Optimizer optimizer(candles, options.config, optimizerOptions);
+
+    // An explicit --sl / --tp fixes that parameter instead of searching it.
+    const auto sls = [&](std::vector<double> grid) {
+        return options.config.stopLossPct > 0.0 ? std::vector<double>{options.config.stopLossPct} : std::move(grid);
+    };
+    const auto tps = [&](std::vector<double> grid) {
+        return options.config.takeProfitPct > 0.0 ? std::vector<double>{options.config.takeProfitPct} : std::move(grid);
+    };
+
+    const std::size_t split = optimizer.splitIndex();
+    std::cout << "[Optimizer] Train: " << candles.front().timestamp << " -> " << candles[split - 1].timestamp << " ("
+              << split << " bars)";
+    if (split < candles.size()) {
+        std::cout << " | Test: " << candles[split].timestamp << " -> " << candles.back().timestamp << " ("
+                  << candles.size() - split << " bars)";
+    }
+    std::cout << "\n";
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<OptimResult> results;
+    std::string title;
+
+    if (options.command == Command::OPTIMIZE_MA) {
+        MaGrid grid;
+        grid.shortPeriods = {5, 10, 15, 20, 30};
+        grid.longPeriods = {20, 50, 100, 150, 200};
+        grid.stopLosses = sls({0.0, 3.0, 5.0, 7.0, 10.0});
+        grid.takeProfits = tps({0.0, 10.0, 20.0, 30.0});
+        grid.type = options.useEma ? MaType::EMA : MaType::SMA;
+        results = optimizer.runMA(grid);
+        title = options.useEma ? "EMA Crossover" : "MA Crossover";
+    } else {
+        RsiGrid grid;
+        grid.periods = {7, 14, 21};
+        grid.oversolds = {25.0, 30.0, 35.0};
+        grid.overboughts = {65.0, 70.0, 75.0};
+        grid.stopLosses = sls({0.0, 3.0, 5.0, 7.0});
+        grid.takeProfits = tps({0.0, 10.0, 15.0, 20.0});
+        results = optimizer.runRSI(grid);
+        title = "RSI Strategy";
+    }
+
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    Report::printOptimization(std::cout, results, title);
+    std::cout << "\nExecution time: " << Report::formatNumber(ms, 1) << " ms (" << results.size()
+              << " configurations tested)\n";
+    return 0;
+}
+
+} // namespace
 
 int main(int argc, char *argv[]) {
-    std::cout << "+--------------------------------------+\n"
-              << "|   C++ Financial Backtesting Engine   |\n"
-              << "+--------------------------------------+\n\n";
+    const std::string program = argc > 0 ? argv[0] : "backtest";
+    const std::vector<std::string> args(argv + (argc > 0 ? 1 : 0), argv + argc);
 
-    if (argc < 3) {
-        printUsage(argv[0]);
-        return 1;
+    CliOptions options;
+    try {
+        options = parseCli(args);
+    } catch (const CliError &e) {
+        std::cerr << "[ERROR] " << e.what() << "\n\n" << usage(program);
+        return 2;
     }
-
-    const std::string csvFile = argv[1];
-    const std::string stratName = argv[2];
-    const double initialCapital = 10000.0;
-    const double feeRate = 0.001;
+    if (options.help) {
+        std::cout << usage(program);
+        return 0;
+    }
 
     try {
-        auto candles = DataParser::loadCSV(csvFile);
+        std::vector<std::string> warnings;
+        const auto candles = DataParser::loadCSV(options.csvPath, &warnings);
+        for (const auto &warning : warnings) {
+            std::cerr << "[DataParser] " << warning << "\n";
+        }
         if (candles.empty()) {
-            std::cerr << "[ERROR] No valid data found.\n";
+            std::cerr << "[ERROR] No valid data found in " << options.csvPath << "\n";
             return 1;
         }
-
-        if (stratName == "optimize") {
-            if (argc < 4) {
-                printUsage(argv[0]);
-                return 1;
+        if (!options.periodsPerYearSet) {
+            if (const auto inferred = DataParser::inferPeriodsPerYear(candles)) {
+                options.config.periodsPerYear = *inferred;
             }
-
-            const std::string target = argv[3];
-            Optimizer optimizer(candles, initialCapital, feeRate);
-
-            auto t0 = std::chrono::high_resolution_clock::now();
-
-            std::vector<OptimResult> results;
-
-            if (target == "ma") {
-                results = optimizer.runMA({5, 10, 15, 20, 30}, {20, 50, 100, 150, 200}, {0.0, 3.0, 5.0, 7.0, 10.0},
-                                          {0.0, 10.0, 20.0, 30.0});
-                Optimizer::printResults(results, "MA Crossover");
-            } else if (target == "rsi") {
-                results = optimizer.runRSI({7, 14, 21}, {25.0, 30.0, 35.0}, {65.0, 70.0, 75.0}, {0.0, 3.0, 5.0, 7.0},
-                                           {0.0, 10.0, 15.0, 20.0});
-                Optimizer::printResults(results, "RSI Strategy");
-            } else {
-                std::cerr << "[ERROR] Unknown target : " << target << "\n";
-                return 1;
-            }
-
-            auto t1 = std::chrono::high_resolution_clock::now();
-            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-            std::cout << "\n  Execution time : " << std::fixed << std::setprecision(1) << ms << " ms" << "  ("
-                      << results.size() << " configurations tested)\n\n";
-
-            return 0;
         }
+        std::cout << "[DataParser] " << candles.size() << " candles loaded from " << options.csvPath << " ("
+                  << candles.front().timestamp << " -> " << candles.back().timestamp << ")\n";
+        std::cout << "[Config] " << costsDescription(options.config) << "\n";
 
-        std::unique_ptr<Strategy> strategy;
-
-        if (stratName == "ma") {
-            int shortP = (argc > 3) ? std::stoi(argv[3]) : 10;
-            int longP = (argc > 4) ? std::stoi(argv[4]) : 50;
-            strategy = std::make_unique<MovingAverageCrossover>(shortP, longP, feeRate);
-        } else if (stratName == "rsi") {
-            int period = (argc > 3) ? std::stoi(argv[3]) : 14;
-            double oversold = (argc > 4) ? std::stod(argv[4]) : 30.0;
-            double overbought = (argc > 5) ? std::stod(argv[5]) : 70.0;
-            strategy = std::make_unique<RSIStrategy>(period, oversold, overbought, feeRate);
-        } else {
-            std::cerr << "[ERROR] Unknown strategy : " << stratName << "\n";
-            printUsage(argv[0]);
-            return 1;
+        if (options.command == Command::OPTIMIZE_MA || options.command == Command::OPTIMIZE_RSI) {
+            return runOptimization(candles, options);
         }
-
-        if (hasFlag(argc, argv, "--sl")) {
-            double sl = parseFlag(argc, argv, "--sl", 5.0);
-            strategy->setStopLoss(sl);
-            std::cout << "[Risk] Stop-Loss activated at -" << sl << "%\n";
-        }
-        if (hasFlag(argc, argv, "--tp")) {
-            double tp = parseFlag(argc, argv, "--tp", 15.0);
-            strategy->setTakeProfit(tp);
-            std::cout << "[Risk] Take-Profit activated at +" << tp << "%\n";
-        }
-
-        Portfolio portfolio(initialCapital, feeRate);
-        BacktestResult result = portfolio.run(candles, *strategy);
-        Portfolio::printReport(result);
+        return runBacktest(candles, options);
+    } catch (const CliError &e) {
+        std::cerr << "[ERROR] " << e.what() << "\n";
+        return 2;
     } catch (const std::exception &e) {
-        std::cerr << "[EXCEPTION] " << e.what() << "\n";
+        std::cerr << "[ERROR] " << e.what() << "\n";
         return 1;
     }
-
-    return 0;
 }
