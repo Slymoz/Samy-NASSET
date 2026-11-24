@@ -2,6 +2,9 @@
 build/
 compile_commands.json
 
+# Exports (--export)
+results/
+
 # IDE
 .vscode/
 .idea/
@@ -9,3 +12,7 @@ compile_commands.json
 # Binaries
 backtest
 *.out
+
+# Python
+__pycache__/
+.venv/
