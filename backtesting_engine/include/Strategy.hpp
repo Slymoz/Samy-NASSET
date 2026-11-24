@@ -1,65 +1,51 @@
 #pragma once
 
 #include "Types.hpp"
-#include <vector>
-#include <string>
-#include <optional>
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
+// A trading strategy only decides *when* to be in the market. Position
+// sizing, fees, slippage, stop-loss and take-profit are handled by the
+// Backtester, so a strategy holds no trading state and can be shared by
+// several simulations running in parallel once it is prepared.
 class Strategy {
   public:
     virtual ~Strategy() = default;
 
-    virtual void prepare(const std::vector<Candle> &candles) = 0;
+    // Precompute the indicators for the whole series. Indicators must be
+    // causal (value at index i only depends on bars <= i) to avoid look-ahead.
+    void prepare(const std::vector<Candle> &candles) {
+        compute(candles);
+        m_preparedBars = candles.size();
+    }
 
-    virtual std::optional<Order> evaluate(const std::vector<Candle> &candles, int index, double currentCash,
-                                          double currentPosition) = 0;
+    bool isPreparedFor(const std::vector<Candle> &candles) const {
+        return m_preparedBars == candles.size() && !candles.empty();
+    }
+
+    // Called at the close of bar `index` (index >= warmup()). The returned
+    // signal is executed by the engine at the open of bar `index + 1`.
+    virtual Signal onBar(const std::vector<Candle> &candles, std::size_t index, bool inPosition) const = 0;
+
+    // First bar index at which onBar() may be called.
+    virtual std::size_t warmup() const = 0;
 
     virtual std::string name() const = 0;
 
-    void setStopLoss(double percent) {
-        m_stopLossPercent = percent;
-        m_useStopLoss = true;
-    }
-    void setTakeProfit(double percent) {
-        m_takeProfitPercent = percent;
-        m_useTakeProfit = true;
-    }
-
   protected:
-    void recordEntry(double price) {
-        m_entryPrice = price;
-        m_inPosition = true;
-    }
-    void recordExit() {
-        m_entryPrice = 0.0;
-        m_inPosition = false;
-    }
+    virtual void compute(const std::vector<Candle> &candles) = 0;
 
-    std::optional<Order> checkRiskManagement(const std::vector<Candle> &candles, int index, double currentPosition) {
-        if (!m_inPosition || currentPosition <= 0.0) {
-            return std::nullopt;
+    static std::vector<double> closes(const std::vector<Candle> &candles) {
+        std::vector<double> values;
+        values.reserve(candles.size());
+        for (const auto &candle : candles) {
+            values.push_back(candle.close);
         }
-
-        double currentPrice = candles[index].close;
-        double pnlPercent = (currentPrice - m_entryPrice) / m_entryPrice * 100.0;
-
-        if (m_useStopLoss && pnlPercent <= -m_stopLossPercent) {
-            recordExit();
-            return Order{candles[index].timestamp, OrderSide::SELL, currentPrice, currentPosition};
-        }
-
-        if (m_useTakeProfit && pnlPercent >= m_takeProfitPercent) {
-            recordExit();
-            return Order{candles[index].timestamp, OrderSide::SELL, currentPrice, currentPosition};
-        }
-
-        return std::nullopt;
+        return values;
     }
 
-    double m_entryPrice = 0.0;
-    bool m_inPosition = false;
-    bool m_useStopLoss = false;
-    bool m_useTakeProfit = false;
-    double m_stopLossPercent = 5.0;
-    double m_takeProfitPercent = 15.0;
+  private:
+    std::size_t m_preparedBars = 0;
 };
