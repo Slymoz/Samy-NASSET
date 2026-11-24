@@ -30,9 +30,12 @@ All commands target **Linux / WSL (Ubuntu)**. On Windows, run them inside WSL.
 git clone https://github.com/Slymoz/Samy-NASSET.git
 cd Samy-NASSET/backtesting_engine
 
-./build.sh
+./build.sh                                   # build + unit tests
+./build/backtest data/btc.csv ma 10 50       # single backtest (sample data included)
+./build/backtest data/btc.csv optimize ma    # parameter search with out-of-sample test
+
+# Optional: refresh the data (python3 -m pip install -r requirements.txt)
 python3 download_data.py BTC-USD 2y 1d data/btc.csv
-./build/backtest data/btc.csv ma 10 50
 ```
 
 ### Nexus AI (Python, runs in a virtual environment)
@@ -62,7 +65,7 @@ See the [Nexus AI README](nexus-ai/README.md) for configuration, MCP setup and t
 
 GitHub Actions workflows run on every push and pull request:
 
-- **C++ CI**: builds the backtesting engine and runs the lint checks.
+- **C++ CI**: lint check (clang-format / clang-tidy), GCC and Clang builds with warnings as errors, unit tests, sanitizer build and CLI smoke tests for the backtesting engine.
 - **Nexus AI CI/CD** (on changes under `nexus-ai/`): `ruff` lint and format
   check, ~80 tests with coverage on Python 3.10 to 3.13, a smoke test that
   starts the full stack with `start.sh`, and a Docker image build checked in a
